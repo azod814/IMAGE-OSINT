@@ -7,9 +7,11 @@ Educational & Cyber Security Awareness Use Only.
 
 import os
 import sys
+import json
+import threading
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
 from PIL import Image, ImageTk
 from PIL.ExifTags import TAGS, GPSTAGS
@@ -257,7 +259,6 @@ class PhotoReconApp:
 
     def on_file_drop(self, event):
         path = event.data.strip()
-        # Clean path for Windows curly braces
         if path.startswith("{") and path.endswith("}"):
             path = path[1:-1]
         if os.path.isfile(path):
@@ -270,10 +271,7 @@ class PhotoReconApp:
         self.status_lbl.config(text="● ANALYZING", fg=ACCENT_WARN)
         self.log_msg(f"Target selected: {filename}")
 
-        # Render visual preview immediately
         self.render_image_preview(path)
-
-        # Extract metadata
         threading.Thread(target=self._metadata_worker, args=(path,), daemon=True).start()
 
     def render_image_preview(self, path):
@@ -314,7 +312,6 @@ class PhotoReconApp:
         except Exception as e:
             self.log_msg(f"EXIF parsing error: {e}")
 
-        # Parse GPS
         lat, lon = None, None
         if gps_info:
             try:
@@ -341,7 +338,6 @@ class PhotoReconApp:
         self.extracted_data = meta
         self.extracted_gps = (lat, lon) if (lat and lon) else None
 
-        # Helper to safely search
         def get_val(*keys):
             for k in keys:
                 for mk, v in meta.items():
@@ -349,7 +345,6 @@ class PhotoReconApp:
                         return str(v).strip()
             return "N/A"
 
-        # Populate Fields
         self.row_labels["CAMERA MAKE"].config(text=get_val("Make"))
         self.row_labels["CAMERA MODEL"].config(text=get_val("Model"))
         self.row_labels["DATE & TIME TAKEN"].config(text=get_val("DateTimeOriginal", "DateTime"))
@@ -360,7 +355,6 @@ class PhotoReconApp:
         self.row_labels["IMAGE RESOLUTION"].config(text=meta.get("IMAGE RESOLUTION", "N/A"))
         self.row_labels["SOFTWARE / OS"].config(text=get_val("Software"))
 
-        # GPS Population
         if lat and lon:
             self.row_labels["GPS LATITUDE"].config(text=f"{lat:.6f}")
             self.row_labels["GPS LONGITUDE"].config(text=f"{lon:.6f}")
@@ -386,7 +380,6 @@ class PhotoReconApp:
             self.map_btn.config(state="disabled")
             self.log_msg("No GPS tag present in EXIF.")
 
-    # --- SATELLITE MAP GENERATOR ---
     def open_interactive_map(self):
         if not self.extracted_gps:
             return
@@ -394,10 +387,8 @@ class PhotoReconApp:
         lat, lon = self.extracted_gps
         map_path = os.path.abspath("maps/target_geolocation.html")
 
-        # Folium interactive map
         m = folium.Map(location=[lat, lon], zoom_start=17, tiles="OpenStreetMap")
         
-        # Add high-precision target pin
         popup_html = f"""
         <div style="font-family:sans-serif;font-size:12px;">
             <b>Target Image Geolocation</b><br>
@@ -416,7 +407,6 @@ class PhotoReconApp:
         self.log_msg(f"Generated interactive map: {map_path}")
         webbrowser.open(f"file://{map_path}")
 
-    # --- EXPORT ACTIONS ---
     def copy_metadata(self):
         if not self.extracted_data:
             ModernDialog(self.root, "NO DATA", "Analyze an image first.")
