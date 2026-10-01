@@ -1,8 +1,6 @@
 """
-IMAGE EXIF & GPS RECON TOOL (AZOD814) - v2.0
-Tactical Geolocation OSINT with Embedded In-App Interactive Map
-
-Educational & Cyber Security Awareness Use Only.
+IMAGE EXIF & GPS RECON TOOL (AZOD814) - v3.0 Deep OSINT
+High-Precision Satellite Forensics & Complete Raw Metadata Inspector
 """
 
 import os
@@ -11,18 +9,17 @@ import json
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from datetime import datetime
 from PIL import Image, ImageTk
-from PIL.ExifTags import TAGS, GPSTAGS
+from PIL.ExifTags import TAGS, GPSTAGS, IFD
 
-# Embedded Interactive Map inside Tkinter (Free, Zero API Key)
+# Satellite & Map View Support
 try:
     import tkintermapview
     MAP_AVAILABLE = True
 except ImportError:
     MAP_AVAILABLE = False
 
-# Native Drag and drop support
+# Native Drag and Drop
 DND_AVAILABLE = False
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -31,387 +28,492 @@ try:
 except ImportError:
     TkRoot = tk.Tk
 
+# Secondary Deep Parser
+try:
+    import exifread
+    EXIFREAD_AVAILABLE = True
+except ImportError:
+    EXIFREAD_AVAILABLE = False
 
-# Tactical Slate Palette
-BG = "#0a0e14"
-BG_CARD = "#121820"
-BG_PANEL = "#18222d"
-BORDER = "#253342"
+
+# Cyber Tactical UI Colors
+BG_DARK = "#090d13"
+BG_CARD = "#111823"
+BG_CELL = "#15202d"
+BORDER = "#1f2e42"
 ACCENT_CYAN = "#00e5ff"
 ACCENT_GREEN = "#10b981"
-ACCENT_WARN = "#f59e0b"
+ACCENT_AMBER = "#f59e0b"
 ACCENT_RED = "#ef4444"
-TEXT_WHITE = "#f8fafc"
-TEXT_MUTED = "#8699af"
-INPUT_BG = "#06090d"
+TEXT_MAIN = "#f1f5f9"
+TEXT_DIM = "#94a3b8"
 
-FONT_MAIN = "DejaVu Sans" if os.name != "nt" else "Segoe UI"
-FONT_MONO = "DejaVu Sans Mono" if os.name != "nt" else "Consolas"
-
-
-def ensure_dirs():
-    for d in ("reports", "cache"):
-        os.makedirs(d, exist_ok=True)
+FONT_MAIN = "Segoe UI" if os.name == "nt" else "DejaVu Sans"
+FONT_MONO = "Consolas" if os.name == "nt" else "DejaVu Sans Mono"
 
 
-def convert_to_degrees(value):
-    """Convert GPS coordinates from EXIF format (degrees, minutes, seconds) to decimal."""
+def parse_rational(val):
+    """Safely converts IFDRational, tuples, or floats to pure float."""
     try:
-        def val_to_float(v):
-            if hasattr(v, 'numerator') and hasattr(v, 'denominator'):
-                return float(v.numerator) / float(v.denominator) if v.denominator != 0 else float(v.numerator)
-            return float(v)
+        if hasattr(val, "real") and hasattr(val, "imag"):
+            return float(val)
+        if hasattr(val, "numerator") and hasattr(val, "denominator"):
+            return float(val.numerator) / float(val.denominator) if val.denominator != 0 else float(val.numerator)
+        if isinstance(val, (tuple, list)):
+            return [parse_rational(x) for x in val]
+        return float(val)
+    except Exception:
+        return val
 
-        d = val_to_float(value[0])
-        m = val_to_float(value[1])
-        s = val_to_float(value[2])
-        return d + (m / 60.0) + (s / 3600.0)
+
+def dms_to_decimal(coords, ref):
+    """Converts Degrees, Minutes, Seconds to Decimal Latitude/Longitude."""
+    try:
+        deg = parse_rational(coords[0])
+        minute = parse_rational(coords[1])
+        sec = parse_rational(coords[2])
+        dec = float(deg) + (float(minute) / 60.0) + (float(sec) / 3600.0)
+        if ref in ["S", "W"]:
+            dec = -dec
+        return dec
     except Exception:
         return None
 
 
-class PhotoReconApp:
+class DeepPhotoOSINTApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("EXIF RECON // GEOLOCATION OSINT TOOL")
-        self.root.geometry("1480x900")
-        self.root.minsize(1050, 680)
-        self.root.configure(bg=BG)
+        self.root.title("ADVANCED EXIF & GEOLOCATION SATELLITE RECON // v3.0")
+        self.root.geometry("1540x940")
+        self.root.minsize(1100, 720)
+        self.root.configure(bg=BG_DARK)
 
         self.current_image_path = None
-        self.extracted_gps = None
-        self.extracted_data = {}
+        self.metadata_records = []
+        self.gps_coords = None
         self.preview_image = None
+        self.map_marker = None
 
-        ensure_dirs()
+        self.setup_styles()
         self.build_ui()
 
+    def setup_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "Treeview",
+            background=BG_CELL,
+            foreground=TEXT_MAIN,
+            fieldbackground=BG_CELL,
+            font=(FONT_MONO, 8),
+            rowheight=24,
+            borderwidth=0
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=BG_CARD,
+            foreground=ACCENT_CYAN,
+            font=(FONT_MAIN, 9, "bold"),
+            borderwidth=1,
+            relief="flat"
+        )
+        style.map("Treeview", background=[("selected", "#1e3a5f")], foreground=[("selected", "#ffffff")])
+
     def build_ui(self):
-        # 1. Top Navbar
-        nav = tk.Frame(self.root, bg=BG_CARD, height=72, highlightthickness=1, highlightbackground=BORDER)
-        nav.pack(fill="x", padx=14, pady=(12, 8))
-        nav.pack_propagate(False)
+        # 1. Header Toolbar
+        topbar = tk.Frame(self.root, bg=BG_CARD, height=64, highlightthickness=1, highlightbackground=BORDER)
+        topbar.pack(fill="x", padx=12, pady=(10, 6))
+        topbar.pack_propagate(False)
 
-        brand = tk.Frame(nav, bg=BG_CARD)
-        brand.pack(side="left", padx=18)
-        tk.Label(brand, text="◈  IMAGE EXIF & GPS RECON", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 14, "bold")).pack(anchor="w")
-        tk.Label(brand, text="EMBEDDED SATELLITE RADAR & METADATA FORENSICS", fg=TEXT_MUTED, bg=BG_CARD, font=(FONT_MAIN, 8)).pack(anchor="w")
+        title_box = tk.Frame(topbar, bg=BG_CARD)
+        title_box.pack(side="left", padx=16)
+        tk.Label(title_box, text="⚡ DEEP EXIF & SATELLITE FORENSICS RADAR", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 13, "bold")).pack(anchor="w")
+        tk.Label(title_box, text="DUAL-PIPELINE PARSING ENGINE (PIL-IFD + EXIFREAD DEEP EXTRACT)", fg=TEXT_DIM, bg=BG_CARD, font=(FONT_MAIN, 8)).pack(anchor="w")
 
-        status_box = tk.Frame(nav, bg=BG_CARD)
-        status_box.pack(side="right", padx=18)
-        self.status_lbl = tk.Label(status_box, text="● ENGINE READY", fg=ACCENT_GREEN, bg=BG_CARD, font=(FONT_MONO, 10, "bold"))
-        self.status_lbl.pack(anchor="e")
-        self.status_sub = tk.Label(status_box, text="STANDBY", fg=TEXT_MUTED, bg=BG_CARD, font=(FONT_MONO, 8))
+        status_box = tk.Frame(topbar, bg=BG_CARD)
+        status_box.pack(side="right", padx=16)
+        self.status_main = tk.Label(status_box, text="● ENGINE STANDBY", fg=ACCENT_GREEN, bg=BG_CARD, font=(FONT_MONO, 10, "bold"))
+        self.status_main.pack(anchor="e")
+        self.status_sub = tk.Label(status_box, text="Ready for raw image data", fg=TEXT_DIM, bg=BG_CARD, font=(FONT_MONO, 8))
         self.status_sub.pack(anchor="e")
 
-        # 2. Main Two-Column Structure
-        body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=14, pady=4)
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_rowconfigure(0, weight=1)
+        # 2. Main Work Area
+        main_box = tk.Frame(self.root, bg=BG_DARK)
+        main_box.pack(fill="both", expand=True, padx=12, pady=4)
+        main_box.grid_columnconfigure(0, weight=5)
+        main_box.grid_columnconfigure(1, weight=6)
+        main_box.grid_rowconfigure(0, weight=1)
 
-        # LEFT COLUMN (Dropzone, Controls & Full Forensic Data)
-        left_col = tk.Frame(body, bg=BG)
-        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        # ================= LEFT COLUMN =================
+        left_panel = tk.Frame(main_box, bg=BG_DARK)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
-        # Drag and Drop Area
-        self.drop_card = tk.Frame(left_col, bg=BG_CARD, highlightthickness=2, highlightbackground=BORDER)
-        self.drop_card.pack(fill="x", pady=(0, 8))
+        # Dropzone & Control Bar
+        control_card = tk.Frame(left_panel, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
+        control_card.pack(fill="x", pady=(0, 6))
 
-        self.drop_inner = tk.Frame(self.drop_card, bg=INPUT_BG, height=130)
-        self.drop_inner.pack(fill="x", padx=8, pady=8)
-        self.drop_inner.pack_propagate(False)
+        self.drop_box = tk.Frame(control_card, bg="#070a0e", height=90, highlightthickness=1, highlightbackground="#1b2838")
+        self.drop_box.pack(fill="x", padx=10, pady=8)
+        self.drop_box.pack_propagate(False)
 
-        tk.Label(self.drop_inner, text="⇪", fg=ACCENT_CYAN, bg=INPUT_BG, font=(FONT_MAIN, 24)).pack(pady=(8, 0))
-        self.drop_label = tk.Label(
-            self.drop_inner,
-            text="DRAG & DROP IMAGE FILE HERE\nOR CLICK 'SELECT IMAGE FILE' BELOW",
-            fg=TEXT_WHITE, bg=INPUT_BG, font=(FONT_MONO, 9, "bold"), justify="center"
+        self.drop_lbl = tk.Label(
+            self.drop_box,
+            text="DRAG & DROP IMAGE FILE HERE\n(OR CLICK BUTTONS BELOW)",
+            fg=TEXT_MAIN, bg="#070a0e", font=(FONT_MONO, 9, "bold"), justify="center"
         )
-        self.drop_label.pack(pady=(4, 8))
+        self.drop_lbl.pack(expand=True)
 
-        # Linux/Windows Multi-Handler Drop Binding
         if DND_AVAILABLE:
-            for widget in (self.drop_card, self.drop_inner, self.drop_label):
-                widget.drop_target_register(DND_FILES)
-                widget.dnd_bind("<<Drop>>", self.on_file_drop)
+            for w in (self.drop_box, self.drop_lbl):
+                w.drop_target_register(DND_FILES)
+                w.dnd_bind("<<Drop>>", self.handle_drop)
 
-        # File Select Button
-        btn_bar = tk.Frame(left_col, bg=BG)
-        btn_bar.pack(fill="x", pady=(0, 8))
+        btn_row = tk.Frame(control_card, bg=BG_CARD)
+        btn_row.pack(fill="x", padx=10, pady=(0, 8))
 
         tk.Button(
-            btn_bar, text="📁  SELECT IMAGE FILE", command=self.browse_file,
-            bg="#0284c7", fg="#ffffff", activebackground="#0369a1", font=(FONT_MAIN, 8, "bold"),
-            relief="flat", padx=16, pady=8, cursor="hand2"
+            btn_row, text="📁 SELECT FILE", command=self.select_file,
+            bg="#0284c7", fg="#ffffff", activebackground="#0369a1",
+            font=(FONT_MAIN, 8, "bold"), relief="flat", padx=14, pady=6, cursor="hand2"
         ).pack(side="left", fill="x", expand=True, padx=(0, 4))
 
         tk.Button(
-            btn_bar, text="📋  COPY EXIF DATA", command=self.copy_metadata,
-            bg=BG_PANEL, fg=TEXT_WHITE, activebackground=BORDER, font=(FONT_MAIN, 8, "bold"),
-            relief="flat", padx=16, pady=8, cursor="hand2"
+            btn_row, text="📋 COPY ALL DATA", command=self.copy_all,
+            bg="#1e293b", fg=TEXT_MAIN, activebackground=BORDER,
+            font=(FONT_MAIN, 8, "bold"), relief="flat", padx=14, pady=6, cursor="hand2"
+        ).pack(side="left", fill="x", expand=True, padx=4)
+
+        tk.Button(
+            btn_row, text="💾 EXPORT JSON", command=self.export_json,
+            bg="#1e293b", fg=TEXT_MAIN, activebackground=BORDER,
+            font=(FONT_MAIN, 8, "bold"), relief="flat", padx=14, pady=6, cursor="hand2"
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-        # Geolocation Card
-        geo_card = tk.Frame(left_col, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
-        geo_card.pack(fill="x", pady=(0, 8))
+        # Geolocation Status Card
+        self.geo_card = tk.Frame(left_panel, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
+        self.geo_card.pack(fill="x", pady=(0, 6))
 
-        tk.Label(geo_card, text="📍  GEOLOCATION & RADAR LOCK", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(anchor="w", padx=14, pady=(8, 2))
-        self.geo_text = tk.Label(
-            geo_card,
-            text="STATUS: NO TARGET LOADED\nCoordinates, altitude, and precision fixes will show here.",
-            fg=TEXT_MUTED, bg=BG_CARD, font=(FONT_MONO, 8), justify="left", anchor="w"
+        tk.Label(self.geo_card, text="📍 SATELLITE GEOLOCATION FIX", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(anchor="w", padx=12, pady=(6, 2))
+        self.geo_details = tk.Label(
+            self.geo_card,
+            text="STATUS: NO IMAGE LOADED\nLatitude: -- | Longitude: -- | Altitude: --",
+            fg=TEXT_DIM, bg=BG_CARD, font=(FONT_MONO, 8), justify="left", anchor="w"
         )
-        self.geo_text.pack(fill="x", padx=14, pady=(0, 10))
+        self.geo_details.pack(fill="x", padx=12, pady=(0, 8))
 
-        # Forensic Metadata Table
-        data_card = tk.Frame(left_col, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
-        data_card.pack(fill="both", expand=True)
+        # Comprehensive Deep Metadata Tree
+        tree_card = tk.Frame(left_panel, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
+        tree_card.pack(fill="both", expand=True)
 
-        tk.Label(data_card, text="EXIF FORENSIC METADATA ATTRIBUTES", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(anchor="w", padx=14, pady=(8, 4))
+        tree_header = tk.Frame(tree_card, bg=BG_CARD)
+        tree_header.pack(fill="x", padx=10, pady=(6, 4))
+        tk.Label(tree_header, text="DETAILED METADATA ATTRIBUTES", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(side="left")
+        
+        self.search_var = tk.StringVar()
+        self.search_var.trace("w", self.filter_tree)
+        search_entry = tk.Entry(tree_header, textvariable=self.search_var, bg="#070a0e", fg=TEXT_MAIN, insertbackground=ACCENT_CYAN, font=(FONT_MONO, 8), width=18)
+        search_entry.pack(side="right")
+        tk.Label(tree_header, text="Filter: ", fg=TEXT_DIM, bg=BG_CARD, font=(FONT_MAIN, 8)).pack(side="right")
 
-        scroll_wrap = tk.Frame(data_card, bg=BG_CARD)
-        scroll_wrap.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        tree_box = tk.Frame(tree_card, bg=BG_CARD)
+        tree_box.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        self.table_canvas = tk.Canvas(scroll_wrap, bg=BG_CARD, highlightthickness=0)
-        sbar = ttk.Scrollbar(scroll_wrap, orient="vertical", command=self.table_canvas.yview)
-        self.table_inner = tk.Frame(self.table_canvas, bg=BG_CARD)
+        self.tree = ttk.Treeview(tree_box, columns=("Category", "Tag", "Value"), show="headings", selectmode="browse")
+        self.tree.heading("Category", text="CATEGORY")
+        self.tree.heading("Tag", text="METADATA FIELD")
+        self.tree.heading("Value", text="VALUE")
+        self.tree.column("Category", width=100, minwidth=80)
+        self.tree.column("Tag", width=180, minwidth=140)
+        self.tree.column("Value", width=260, minwidth=180)
 
-        self.table_inner.bind("<Configure>", lambda e: self.table_canvas.configure(scrollregion=self.table_canvas.bbox("all")))
-        self.table_win = self.table_canvas.create_window((0, 0), window=self.table_inner, anchor="nw")
-        self.table_canvas.bind("<Configure>", lambda e: self.table_canvas.itemconfigure(self.table_win, width=e.width))
-        self.table_canvas.configure(yscrollcommand=sbar.set)
+        tree_sbar = ttk.Scrollbar(tree_box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_sbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        tree_sbar.pack(side="right", fill="y")
 
-        self.table_canvas.pack(side="left", fill="both", expand=True)
-        sbar.pack(side="right", fill="y")
+        # ================= RIGHT COLUMN =================
+        right_panel = tk.Frame(main_box, bg=BG_DARK)
+        right_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-        self.render_empty_table()
+        # Visual Image Inspector
+        preview_card = tk.Frame(right_panel, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
+        preview_card.pack(fill="x", pady=(0, 6))
 
-        # RIGHT COLUMN (Visual Inspection Preview + Large In-App Live Map)
-        right_col = tk.Frame(body, bg=BG)
-        right_col.grid(row=0, column=1, sticky="nsew")
+        tk.Label(preview_card, text="TARGET IMAGE PREVIEW", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(anchor="w", padx=12, pady=(6, 2))
+        self.canvas = tk.Canvas(preview_card, bg="#070a0e", height=180, highlightthickness=0)
+        self.canvas.pack(fill="x", padx=10, pady=(0, 4))
+        self.preview_lbl = tk.Label(preview_card, text="No target loaded", fg=TEXT_DIM, bg=BG_CARD, font=(FONT_MAIN, 8))
+        self.preview_lbl.pack(pady=(0, 6))
+        self.render_canvas_placeholder()
 
-        # Top Right: Visual Preview of Image
-        img_card = tk.Frame(right_col, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
-        img_card.pack(fill="x", pady=(0, 8))
-
-        tk.Label(img_card, text="IMAGE VISUAL INSPECTION", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 8, "bold")).pack(anchor="w", padx=12, pady=(6, 2))
-        self.canvas_preview = tk.Canvas(img_card, bg=INPUT_BG, height=180, highlightthickness=0)
-        self.canvas_preview.pack(fill="x", padx=10, pady=(0, 4))
-        self.img_caption = tk.Label(img_card, text="No target image loaded", fg=TEXT_MUTED, bg=BG_CARD, font=(FONT_MAIN, 7))
-        self.img_caption.pack(pady=(0, 6))
-        self.draw_placeholder()
-
-        # Bottom Right: Embedded Interactive Satellite/Street Map
-        map_card = tk.Frame(right_col, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
+        # Satellite Radar Map Card
+        map_card = tk.Frame(right_panel, bg=BG_CARD, highlightthickness=1, highlightbackground=BORDER)
         map_card.pack(fill="both", expand=True)
 
-        map_header = tk.Frame(map_card, bg=BG_CARD)
-        map_header.pack(fill="x", padx=12, pady=(8, 4))
-        tk.Label(map_header, text="🗺  LIVE EMBEDDED GEOLOCATION RADAR", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(side="left")
+        map_top = tk.Frame(map_card, bg=BG_CARD)
+        map_top.pack(fill="x", padx=10, pady=(6, 4))
+        tk.Label(map_top, text="🛰 SATELLITE TACTICAL MAP", fg=ACCENT_CYAN, bg=BG_CARD, font=(FONT_MAIN, 9, "bold")).pack(side="left")
 
-        # In-App Map Widget
-        self.map_container = tk.Frame(map_card, bg=INPUT_BG)
-        self.map_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Map Layer Toggles
+        tk.Button(map_top, text="Satellite (Hybrid)", command=self.set_satellite_mode, bg="#1e293b", fg=TEXT_MAIN, font=(FONT_MAIN, 7, "bold"), relief="flat", padx=6).pack(side="right", padx=2)
+        tk.Button(map_top, text="Street View", command=self.set_street_mode, bg="#1e293b", fg=TEXT_MAIN, font=(FONT_MAIN, 7, "bold"), relief="flat", padx=6).pack(side="right", padx=2)
+
+        self.map_holder = tk.Frame(map_card, bg="#070a0e")
+        self.map_holder.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         if MAP_AVAILABLE:
-            self.map_view = tkintermapview.TkinterMapView(self.map_container, corner_radius=0)
+            self.map_view = tkintermapview.TkinterMapView(self.map_holder, corner_radius=0)
             self.map_view.pack(fill="both", expand=True)
-            # Default center on India
-            self.map_view.set_position(20.5937, 78.9629)
-            self.map_view.set_zoom(4)
-            self.map_marker = None
+            self.set_satellite_mode()
+            self.map_view.set_position(28.6139, 77.2090)  # Default center
+            self.map_view.set_zoom(5)
         else:
-            tk.Label(
-                self.map_container,
-                text="Map module missing. Install via:\npip install tkintermapview",
-                fg=ACCENT_WARN, bg=INPUT_BG, font=(FONT_MONO, 9)
-            ).pack(expand=True)
+            tk.Label(self.map_holder, text="Map library missing.\nRun: pip install tkintermapview", fg=ACCENT_AMBER, bg="#070a0e", font=(FONT_MONO, 10)).pack(expand=True)
 
-    def render_empty_table(self):
-        for w in self.table_inner.winfo_children():
-            w.destroy()
+    def set_satellite_mode(self):
+        if MAP_AVAILABLE and hasattr(self, "map_view"):
+            # High-Resolution Google Satellite Hybrid View
+            self.map_view.set_tile_server(
+                "https://mt0.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}&s=Ga",
+                max_zoom=20
+            )
 
-        fields = [
-            "CAMERA MAKE", "CAMERA MODEL", "DATE & TIME TAKEN",
-            "SHUTTER SPEED", "APERTURE (F-NUMBER)", "ISO SPEED",
-            "FOCAL LENGTH", "IMAGE RESOLUTION", "SOFTWARE / OS",
-            "GPS LATITUDE", "GPS LONGITUDE", "ALTITUDE"
-        ]
-        self.row_labels = {}
-        for f in fields:
-            row = tk.Frame(self.table_inner, bg=BG_CARD)
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=f, fg=TEXT_MUTED, bg=BG_CARD, font=(FONT_MAIN, 7, "bold"), width=20, anchor="w").pack(side="left", padx=8)
-            lbl = tk.Label(row, text="--", fg=TEXT_WHITE, bg=INPUT_BG, font=(FONT_MONO, 8), anchor="w", padx=8, pady=4, wraplength=380, justify="left")
-            lbl.pack(side="left", fill="x", expand=True)
-            self.row_labels[f] = lbl
+    def set_street_mode(self):
+        if MAP_AVAILABLE and hasattr(self, "map_view"):
+            self.map_view.set_tile_server("https://a.tile.openstreetmap.org/{z}/{x}/{y}.png", max_zoom=19)
 
-    def draw_placeholder(self):
-        self.canvas_preview.delete("all")
-        w = max(self.canvas_preview.winfo_width(), 260)
-        h = max(self.canvas_preview.winfo_height(), 180)
-        self.canvas_preview.create_rectangle(10, 10, w - 10, h - 10, outline=BORDER, width=1)
-        self.canvas_preview.create_text(w // 2, h // 2, text="[ IMAGE PREVIEW ]", fill=TEXT_MUTED, font=(FONT_MAIN, 8))
+    def render_canvas_placeholder(self):
+        self.canvas.delete("all")
+        w = max(self.canvas.winfo_width(), 300)
+        h = max(self.canvas.winfo_height(), 180)
+        self.canvas.create_rectangle(8, 8, w - 8, h - 8, outline=BORDER, width=1)
+        self.canvas.create_text(w // 2, h // 2, text="[ IMAGE FEED OFFLINE ]", fill=TEXT_DIM, font=(FONT_MONO, 8))
 
-    # --- FILE DROPS & BROWSING ---
-    def browse_file(self):
-        path = filedialog.askopenfilename(
-            title="Select Image File",
-            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.tiff *.webp"), ("All Files", "*.*")]
-        )
-        if path:
-            self.process_image(path)
-
-    def on_file_drop(self, event):
+    def handle_drop(self, event):
         path = event.data.strip()
-        # Clean paths for Linux URI format (file://) and Windows braces ({})
         if path.startswith("{") and path.endswith("}"):
             path = path[1:-1]
         if path.startswith("file://"):
             path = path[7:]
         path = os.path.abspath(path)
-
         if os.path.isfile(path):
-            self.process_image(path)
+            self.start_processing(path)
 
-    def process_image(self, path):
+    def select_file(self):
+        path = filedialog.askopenfilename(
+            title="Select Target Image",
+            filetypes=[("Image Files", "*.jpg *.jpeg *.png *.heic *.tiff *.webp"), ("All Files", "*.*")]
+        )
+        if path:
+            self.start_processing(path)
+
+    def start_processing(self, path):
         self.current_image_path = path
-        filename = os.path.basename(path)
-        self.drop_label.config(text=f"LOADED FILE:\n{filename}")
-        self.status_lbl.config(text="● ANALYZING", fg=ACCENT_WARN)
+        self.drop_lbl.config(text=f"LOADED:\n{os.path.basename(path)}")
+        self.status_main.config(text="● EXTRACTING", fg=ACCENT_AMBER)
+        self.status_sub.config(text="Deep scanning raw EXIF / GPS structures...")
 
-        self.render_image_preview(path)
-        threading.Thread(target=self._metadata_worker, args=(path,), daemon=True).start()
+        self.update_image_preview(path)
+        threading.Thread(target=self._deep_extractor_worker, args=(path,), daemon=True).start()
 
-    def render_image_preview(self, path):
+    def update_image_preview(self, path):
         try:
             with Image.open(path) as img:
                 img = img.convert("RGB")
-                w = max(self.canvas_preview.winfo_width(), 240)
-                h = max(self.canvas_preview.winfo_height(), 160)
-                img.thumbnail((w - 20, h - 20), Image.Resampling.LANCZOS)
+                w = max(self.canvas.winfo_width(), 260)
+                h = max(self.canvas.winfo_height(), 180)
+                img.thumbnail((w - 16, h - 16), Image.Resampling.LANCZOS)
                 self.preview_image = ImageTk.PhotoImage(img)
 
-            self.canvas_preview.delete("all")
-            self.canvas_preview.create_image(w // 2, h // 2, image=self.preview_image, anchor="center")
-            self.img_caption.config(text=os.path.basename(path)[:36], fg=ACCENT_CYAN)
+            self.canvas.delete("all")
+            self.canvas.create_image(w // 2, h // 2, image=self.preview_image, anchor="center")
+            self.preview_lbl.config(text=f"{os.path.basename(path)} ({os.path.getsize(path)/1024:.1f} KB)", fg=ACCENT_CYAN)
         except Exception:
-            self.draw_placeholder()
+            self.render_canvas_placeholder()
 
-    # --- ADVANCED METADATA & DEEP GPS PARSER ---
-    def _metadata_worker(self, path):
-        metadata = {}
-        gps_info = {}
+    # --- DUAL-ENGINE EXTRACTION LOGIC ---
+    def _deep_extractor_worker(self, path):
+        records = []
+        gps_lat = None
+        gps_lon = None
+        altitude = None
 
+        # 1. Base Image Properties
         try:
-            with Image.open(path) as img:
-                metadata["IMAGE RESOLUTION"] = f"{img.width} x {img.height} Pixels"
-                metadata["FORMAT"] = img.format
+            with Image.open(path) as im:
+                records.append(("Basic", "File Path", path))
+                records.append(("Basic", "File Size", f"{os.path.getsize(path)/1024:.2f} KB"))
+                records.append(("Basic", "Format", str(im.format)))
+                records.append(("Basic", "Dimensions", f"{im.width} x {im.height}"))
+                records.append(("Basic", "Color Mode", str(im.mode)))
 
-                exif_raw = img._getexif()
-                if exif_raw:
-                    for tag_id, value in exif_raw.items():
-                        tag_name = TAGS.get(tag_id, str(tag_id))
-                        if tag_name == "GPSInfo":
-                            for gps_id in value:
-                                sub_name = GPSTAGS.get(gps_id, str(gps_id))
-                                gps_info[sub_name] = value[gps_id]
-                        else:
-                            metadata[tag_name] = value
-        except Exception:
-            pass
+                # 2. Modern Pillow IFD Parsing
+                exif = im.getexif()
+                if exif:
+                    # Root Tags
+                    for tag_id, val in exif.items():
+                        name = TAGS.get(tag_id, f"Tag_{tag_id}")
+                        if name != "GPSInfo":
+                            records.append(("EXIF", name, str(val)))
 
-        lat, lon = None, None
-        if gps_info:
+                    # Extended Exif IFD
+                    try:
+                        exif_ifd = exif.get_ifd(IFD.Exif)
+                        for tag_id, val in exif_ifd.items():
+                            name = TAGS.get(tag_id, f"SubTag_{tag_id}")
+                            records.append(("ExifIFD", name, str(val)))
+                    except Exception:
+                        pass
+
+                    # Direct GPS IFD
+                    try:
+                        gps_ifd = exif.get_ifd(IFD.GPSInfo)
+                        for gid, gval in gps_ifd.items():
+                            gname = GPSTAGS.get(gid, f"GPS_{gid}")
+                            records.append(("GPS_Raw", gname, str(gval)))
+
+                        lat_raw = gps_ifd.get(2)   # GPSLatitude
+                        lat_ref = gps_ifd.get(1)   # GPSLatitudeRef
+                        lon_raw = gps_ifd.get(4)   # GPSLongitude
+                        lon_ref = gps_ifd.get(3)   # GPSLongitudeRef
+                        alt_raw = gps_ifd.get(6)   # GPSAltitude
+
+                        if lat_raw and lon_raw:
+                            gps_lat = dms_to_decimal(lat_raw, lat_ref)
+                            gps_lon = dms_to_decimal(lon_raw, lon_ref)
+                        if alt_raw:
+                            altitude = f"{parse_rational(alt_raw):.2f} m"
+                    except Exception:
+                        pass
+        except Exception as e:
+            records.append(("Error", "Pillow Extraction", str(e)))
+
+        # 3. ExifRead Secondary Deep Scan (Fallback & Enrichment)
+        if EXIFREAD_AVAILABLE:
             try:
-                lat_raw = gps_info.get("GPSLatitude")
-                lat_ref = gps_info.get("GPSLatitudeRef", "N")
-                lon_raw = gps_info.get("GPSLongitude")
-                lon_ref = gps_info.get("GPSLongitudeRef", "E")
+                with open(path, "rb") as f:
+                    tags = exifread.process_file(f, details=True)
+                    for t, val in tags.items():
+                        if not any(r[1] == t for r in records):
+                            records.append(("DeepRaw", t, str(val)))
 
-                if lat_raw and lon_raw:
-                    lat = convert_to_degrees(lat_raw)
-                    if lat_ref == "S":
-                        lat = -lat
+                    # If GPS was not recovered by Pillow, try ExifRead
+                    if gps_lat is None and "GPS GPSLatitude" in tags and "GPS GPSLongitude" in tags:
+                        try:
+                            def to_dec(ratio_list, ref):
+                                parts = [float(x.num) / float(x.den) for x in ratio_list.values]
+                                res = parts[0] + parts[1]/60.0 + parts[2]/3600.0
+                                if ref in ["S", "W"]:
+                                    res = -res
+                                return res
 
-                    lon = convert_to_degrees(lon_raw)
-                    if lon_ref == "W":
-                        lon = -lon
-            except Exception:
-                pass
+                            lat_ref = str(tags.get("GPS GPSLatitudeRef", "N"))
+                            lon_ref = str(tags.get("GPS GPSLongitudeRef", "E"))
+                            gps_lat = to_dec(tags["GPS GPSLatitude"], lat_ref)
+                            gps_lon = to_dec(tags["GPS GPSLongitude"], lon_ref)
+                            if "GPS GPSAltitude" in tags:
+                                alt_v = tags["GPS GPSAltitude"].values[0]
+                                altitude = f"{float(alt_v.num)/float(alt_v.den):.2f} m"
+                        except Exception:
+                            pass
+            except Exception as e:
+                records.append(("Error", "ExifRead", str(e)))
 
-        self.root.after(0, lambda: self.render_results(metadata, gps_info, lat, lon))
+        self.root.after(0, lambda: self.render_final_data(records, gps_lat, gps_lon, altitude))
 
-    def render_results(self, meta, gps_raw, lat, lon):
-        self.status_lbl.config(text="● ANALYSIS COMPLETE", fg=ACCENT_GREEN)
-        self.extracted_data = meta
-        self.extracted_gps = (lat, lon) if (lat and lon) else None
+    def render_final_data(self, records, lat, lon, altitude):
+        self.metadata_records = records
+        self.gps_coords = (lat, lon) if (lat is not None and lon is not None) else None
 
-        def get_val(*keys):
-            for k in keys:
-                for mk, v in meta.items():
-                    if k.lower() == mk.lower() and v:
-                        return str(v).strip()
-            return "N/A"
+        # Populate Table
+        self.populate_tree(records)
 
-        # Populate Attributes
-        self.row_labels["CAMERA MAKE"].config(text=get_val("Make"))
-        self.row_labels["CAMERA MODEL"].config(text=get_val("Model"))
-        self.row_labels["DATE & TIME TAKEN"].config(text=get_val("DateTimeOriginal", "DateTime"))
-        self.row_labels["SHUTTER SPEED"].config(text=get_val("ExposureTime", "ShutterSpeedValue"))
-        self.row_labels["APERTURE (F-NUMBER)"].config(text=get_val("FNumber", "ApertureValue"))
-        self.row_labels["ISO SPEED"].config(text=get_val("ISOSpeedRatings", "ISO"))
-        self.row_labels["FOCAL LENGTH"].config(text=get_val("FocalLength"))
-        self.row_labels["IMAGE RESOLUTION"].config(text=meta.get("IMAGE RESOLUTION", "N/A"))
-        self.row_labels["SOFTWARE / OS"].config(text=get_val("Software"))
+        # Update Status & GPS Panel
+        if self.gps_coords:
+            self.status_main.config(text="● GEOLOCATION LOCKED", fg=ACCENT_GREEN)
+            self.status_sub.config(text=f"Total Attributes: {len(records)} | Precision Coordinates Verified")
 
-        # In-App Live Map Update
-        if lat and lon:
-            self.row_labels["GPS LATITUDE"].config(text=f"{lat:.6f}")
-            self.row_labels["GPS LONGITUDE"].config(text=f"{lon:.6f}")
-            self.row_labels["ALTITUDE"].config(text=f"{gps_raw.get('GPSAltitude', 'N/A')} m")
-
-            self.geo_text.config(
-                text=f"STATUS    : 🎯 GEOLOCATION LOCKED\nLATITUDE  : {lat:.6f}\nLONGITUDE : {lon:.6f}\nRADAR     : Live Map Auto-Centered on Target Location",
+            self.geo_details.config(
+                text=f"STATUS    : 🎯 COORDINATES ACQUIRED\n"
+                     f"Latitude  : {lat:.7f}\n"
+                     f"Longitude : {lon:.7f}\n"
+                     f"Altitude  : {altitude or 'Not Recorded'}\n"
+                     f"Google URL: https://www.google.com/maps?q={lat},{lon}",
                 fg=ACCENT_GREEN
             )
 
-            # Move In-App Map Directly to Coordinates
+            # Move and Pin Radar Satellite Map
             if MAP_AVAILABLE and hasattr(self, "map_view"):
                 self.map_view.set_position(lat, lon)
-                self.map_view.set_zoom(17)
-
+                self.map_view.set_zoom(18)
                 if self.map_marker:
                     self.map_view.delete(self.map_marker)
-                self.map_marker = self.map_view.set_marker(lat, lon, text=f"Target: {lat:.4f}, {lon:.4f}")
+                self.map_marker = self.map_view.set_marker(lat, lon, text=f"Target: {lat:.5f}, {lon:.5f}")
         else:
-            self.row_labels["GPS LATITUDE"].config(text="NO GPS TAG")
-            self.row_labels["GPS LONGITUDE"].config(text="NO GPS TAG")
-            self.row_labels["ALTITUDE"].config(text="N/A")
+            self.status_main.config(text="● COMPLETED (NO GPS)", fg=ACCENT_AMBER)
+            self.status_sub.config(text=f"Total Attributes: {len(records)} | No GPS fix found in metadata block")
 
-            self.geo_text.config(
-                text="GPS STATUS: NO COORDINATES IN METADATA\n"
-                     "Reason: Phone camera had 'Location/Geotagging' turned OFF when photo was taken,\n"
-                     "or photo was shared through chat apps without Document mode.",
-                fg=ACCENT_WARN
+            self.geo_details.config(
+                text="STATUS: NO GPS EMBEDDED IN IMAGE\n"
+                     "Tip 1: Phone settings me Camera app ka 'Location tags' toggle check karo.\n"
+                     "Tip 2: WhatsApp document me bhejne par metadata rehta hai, lekin agar photo\n"
+                     "kisi editor se pass hui ho ya screenshot ho to GPS clean ho jata hai.",
+                fg=ACCENT_AMBER
             )
 
-    def copy_metadata(self):
-        if not self.extracted_data:
+    def populate_tree(self, records):
+        self.tree.delete(*self.tree.get_children())
+        for cat, tag, val in records:
+            # Highlight GPS and Camera tags
+            item = self.tree.insert("", "end", values=(cat, tag, val))
+            if "GPS" in cat or "GPS" in tag:
+                self.tree.item(item, tags=("gps_tag",))
+            elif "Make" in tag or "Model" in tag:
+                self.tree.item(item, tags=("cam_tag",))
+
+        self.tree.tag_configure("gps_tag", foreground=ACCENT_GREEN)
+        self.tree.tag_configure("cam_tag", foreground=ACCENT_CYAN)
+
+    def filter_tree(self, *args):
+        query = self.search_var.get().lower()
+        self.tree.delete(*self.tree.get_children())
+        for cat, tag, val in self.metadata_records:
+            if query in cat.lower() or query in tag.lower() or query in str(val).lower():
+                self.tree.insert("", "end", values=(cat, tag, val))
+
+    def copy_all(self):
+        if not self.metadata_records:
             return
-        lines = [f"{k}: {v}" for k, v in self.extracted_data.items()]
-        if self.extracted_gps:
-            lines.append(f"GPS_COORDINATES: {self.extracted_gps[0]}, {self.extracted_gps[1]}")
+        lines = [f"[{cat}] {tag} = {val}" for cat, tag, val in self.metadata_records]
+        if self.gps_coords:
+            lines.append(f"[COORDINATES] {self.gps_coords[0]}, {self.gps_coords[1]}")
+            lines.append(f"[GOOGLE_MAPS] https://www.google.com/maps?q={self.gps_coords[0]},{self.gps_coords[1]}")
         self.root.clipboard_clear()
         self.root.clipboard_append("\n".join(lines))
-        messagebox.showinfo("Copied", "All EXIF metadata copied to clipboard!")
+        messagebox.showinfo("Copied", f"Copied {len(lines)} metadata attributes to clipboard!")
+
+    def export_json(self):
+        if not self.metadata_records:
+            return
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON File", "*.json")],
+            initialfile=f"forensic_report_{int(os.path.getmtime(self.current_image_path)) if self.current_image_path else 'export'}.json"
+        )
+        if save_path:
+            dump_data = {
+                "file": self.current_image_path,
+                "coordinates": self.gps_coords,
+                "attributes": {f"{cat}::{tag}": val for cat, tag, val in self.metadata_records}
+            }
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(dump_data, f, indent=4)
+            messagebox.showinfo("Exported", f"Forensic data saved to:\n{save_path}")
 
 
 def main():
     root = TkRoot()
-    app = PhotoReconApp(root)
+    app = DeepPhotoOSINTApp(root)
     root.mainloop()
 
 
